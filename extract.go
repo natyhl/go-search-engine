@@ -9,25 +9,29 @@ import (
 	"golang.org/x/net/html/atom"
 )
 
-// EXTRACT: extract all of the words between
-func extract(Dout chan, EOut chan) {
-	var words []string
-	var hrefs []string
+type ExtractResult struct {
+	URL   string
+	Words []string
+	Hrefs []string
+}
 
-	for body := range Dout {
-		w, h := extractHelper(body)
-		words = append(words, w...)
-		hrefs = append(hrefs, h...)
+// EXTRACT: extract all of the words between
+func extract(Dout chan DownloadResult, EOut chan ExtractResult) {
+	for result := range Dout {
+		if result.Err != nil { // skip if download had an error
+			continue
+		}
+		w, h := extractHelper(result.Body)
+		EOut <- ExtractResult{URL: result.URL, Words: w, Hrefs: h}
+
 	}
-	
-	EOut <- struct { Words []string; Hrefs []string }{words, hrefs}
 }
 
 func extractHelper(body []byte) ([]string, []string) {
 	var words []string
 	var hrefs []string
 
-	// Parse HTML		
+	// Parse HTML
 
 	doc, err := html.Parse(bytes.NewReader(body))
 	if err != nil {

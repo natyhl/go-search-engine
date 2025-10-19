@@ -123,6 +123,11 @@ func (s *SqlIndex) AddWord(url, word string) {
 }
 
 func (s *SqlIndex) AddDocument(url string, words []string) {
+	tx, err := s.db.Begin() // start transaction
+	if err != nil {
+		return
+	}
+
 	if _, err := s.db.Exec(`INSERT INTO documents(url, doc_length) VALUES(?, 0)`, url, len(words)); err != nil {
 		log.Println("insert documents:", err)
 		return
@@ -130,6 +135,9 @@ func (s *SqlIndex) AddDocument(url string, words []string) {
 
 	for _, w := range words {
 		s.AddWord(url, w)
+	}
+	if err := tx.Commit(); err != nil {
+		return
 	}
 }
 

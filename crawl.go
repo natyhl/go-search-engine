@@ -11,24 +11,18 @@ import (
 func crawl(seedUrl string, freqmap map[string]map[string]int, idx Index) map[string]map[string]int {
 
 	// make channels of size 10000
-	DIn := make(chan , 10000)   // download input
-	DOut := make(chan, 10000)
-	EOut := make(chan , 10000) // extract output
-	CIn := make(chan struct { Base string; Href string }, 10000)
+	DIn := make(chan string, 10000)          // download input
+	DOut := make(chan DownloadResult, 10000) // download output
+	EOut := make(chan ExtractResult, 10000)  // extract output
+	CIn := make(chan CleanInput, 10000)
+	COut := make(chan string, 10000) // clean output - going to pass to DIn
 
-
-	// Use 
-	for {
-		select{
-			case  DIn <- url:
-				go download(url, DOut)
-			case  DOut <- :
-				go extract(DOut, EOut)
-			case  EOut 
-				go clean // when you get new URL from clean, pass it to DIn
-			default:
-				// len of all channels == 0
-		}
+	numWorkers := 3
+	for i := 0; i < numWorkers; i++ { // start 3 workers of each type
+		go download(DIn, DOut)
+		go extract(DOut, EOut)
+		go clean(CIn, COut)
+		go indexer(EOut, idx) //**describe why
 	}
 
 	visited := make(map[string]bool)
@@ -37,93 +31,127 @@ func crawl(seedUrl string, freqmap map[string]map[string]int, idx Index) map[str
 	stopwords, _ := LoadStopwords("stopwords-en.json")
 	stopSet := StopwordSet(stopwords)
 
-	for len(queue) > 0 {
-		currentURL := queue[0]
-		queue = queue[1:] // dequeue
+	pendingDownloads := 0 // helpers to stop the for loop when all done
+	pendingCleans := 0
 
-		if visited[currentURL] {
-			continue
-		}
-		visited[currentURL] = true
-
-		// Check robots.txt
-		u, err := url.Parse(currentURL)
-		if err != nil {
-			continue
-		}
-		rules := rulesForHost(u)
-
-		if isDisallowed(rules, u.Path) {
-			continue // disallowed by robots.txt
-		}
-
-		// Enforce crawl delay
-		waitForDelay(rules)
-
-		// Now we can download:
-		// Download
-		body, err := download(currentURL)
-		if err != nil {
-			continue
-		}
-
-		// Extract
-		words, hrefs := extract(body)
-
-		cleaned := []string{}
-		for _, h := range hrefs {
-			c := clean(currentURL, h)
-			if c != "" {
-				cleaned = append(cleaned, c)
+	for len(queue) > 0 || pendingDownloads > 0 || pendingCleans > 0 { // download and cleaning in progress
+		select { // listens to multiple channels simultaneously and executes whichever case is ready
+		case cleanedURL := <-COut:
+			pendingCleans--
+			if !visited[cleanedURL] {
+				queue = append(queue, cleanedURL)
 			}
-		}
+		case result := <-EOut:
+			pendingDownloads-- // download->extract cycle complete
+			// process result
+			currentURL := result.URL
 
-		// new slice for Index.AddDocument, collect kept tokens for this page
-		var kept []string // will only be used if idx != nil
-		if idx != nil {
-			kept = make([]string, 0, len(words))
-		}
+			for _, h := range result.Hrefs {
+				CIn <- CleanInput{Base: currentURL, Href: h}
+				pendingCleans++
+			}
 
-		for _, w := range words {
-			// Is word in stop words?
+			// Process words for freqmap only (indexer handles DB)
+			if freqmap != nil {
+				for _, w := range result.Words {
+					wl := strings.ToLower(w)
+					if _, isStop := stopSet[wl]; isStop {
+						continue // skip stopwords
+					}
+
+					stemmed, _ := snowball.Stem(wl, "english", true)
+					if stemmed == "" {
+						continue
+					}
+
+					// add to map
+					_, ok := freqmap[stemmed]
+					if !ok {
+						freqmap[stemmed] = make(map[string]int)
+						freqmap[stemmed][currentURL] = 1 // initialize inner map if it doesn't exist
+					} else {
+						freqmap[stemmed][currentURL]++ // increment count
+					}
+				}
+			}
+
+		default:
+			// no channels ready, process next URL in queue
+			if len(queue) == 0 {
+				continue
+			}
+
+			// process queue if not empty
+			currentURL := queue[0]
+			queue = queue[1:] // dequeue
+
+			if visited[currentURL] {
+				continue
+			}
+
+			visited[currentURL] = true
+
+			// Check robots.txt
+			u, err := url.Parse(currentURL)
+			if err != nil {
+				continue
+			}
+
+			rules := rulesForHost(u)
+
+			if isDisallowed(rules, u.Path) {
+				continue // disallowed by robots.txt
+			}
+
+			// Enforce crawl delay
+			waitForDelay(rules)
+
+			// Send URL to download channel
+			DIn <- currentURL
+			pendingDownloads++
+
+		}
+	}
+
+	//Close channels when done, signal workers to stop
+	close(DIn)
+	close(CIn)
+
+	for pendingDownloads > 0 || pendingCleans > 0 {
+		select {
+		case <-COut:
+			pendingCleans--
+		case <-EOut:
+			pendingDownloads--
+		}
+	}
+
+	return freqmap
+}
+
+func indexer(EOut chan ExtractResult, idx Index) { // put cleaned, stemmed words into the index
+	stopword, _ := LoadStopwords("stopwords-en.json")
+	stopSet := StopwordSet(stopword)
+
+	for result := range EOut { // keep reading until channel is closed
+		var kept []string
+
+		for _, w := range result.Words {
 			wl := strings.ToLower(w)
 			if _, isStop := stopSet[wl]; isStop {
 				continue // skip stopwords
 			}
 
-			//stemm word
 			stemmed, _ := snowball.Stem(wl, "english", true)
 			if stemmed == "" {
 				continue
 			}
 
-			if freqmap != nil {
-				// add to map
-				_, ok := freqmap[stemmed]
-				if !ok {
-					freqmap[stemmed] = make(map[string]int)
-					freqmap[stemmed][currentURL] = 1 // initialize inner map if it doesn't exist
-				} else {
-					freqmap[stemmed][currentURL]++ // increment count
-				}
-			}
-
-			if idx != nil {
-				kept = append(kept, stemmed)
-			}
+			kept = append(kept, stemmed)
 		}
 
-		// Update Index once per page (increments DocCount once, maintains Doc & Tracked)
 		if idx != nil && len(kept) > 0 {
-			idx.AddDocument(currentURL, kept)
-		}
-
-		// Add new URLs to the queue
-		for _, s := range cleaned {
-			if !visited[s] {
-				queue = append(queue, s)
-			}
+			idx.AddDocument(result.URL, kept)
 		}
 	}
-	return freqmap
 }

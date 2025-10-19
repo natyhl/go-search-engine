@@ -2,9 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
+	"time"
 )
 
 // startServer serves ./top10 at /top10/ and exposes /search?q=...
@@ -35,25 +37,27 @@ func startServer(idx Index) {
 }
 
 func main() {
-	// indexOpt := flag.String("index", "inmem", "index backend: inmem | sqlite")               // default to in-memory index
-	// dbPath := flag.String("db", "project03.db", "sqlite database file (when -index=sqlite)") // defines a -db flag for the SQLite file path (used only when -index=sqlite)
-	// resetDB := flag.Bool("reset", false, "drop & recreate sqlite tables on startup")
-	// seed := flag.String("seed", "http://127.0.0.1:8080/top10/", "seed URL to crawl") // choose the starting URL for the crawler, default to local ./top10
-	// flag.Parse()                                                                     // parse the command-line flags and populates the pointers above
+	indexOpt := flag.String("index", "inmem", "index backend: inmem | sqlite")               // default to in-memory index
+	dbPath := flag.String("db", "project04.db", "sqlite database file (when -index=sqlite)") // defines a -db flag for the SQLite file path (used only when -index=sqlite)
+	resetDB := flag.Bool("reset", false, "drop & recreate sqlite tables on startup")
+	seed := flag.String("seed", "http://127.0.0.1:8080/top10/", "seed URL to crawl") // choose the starting URL for the crawler, default to local ./top10
+	flag.Parse()                                                                     // parse the command-line flags and populates the pointers above
 
-	// idx, err := NewIndex(*indexOpt, *dbPath, *resetDB)
-	// if err != nil {
-	// 	log.Fatal(err)
-	// }
+	idx, err := NewIndex(*indexOpt, *dbPath, *resetDB)
+	if err != nil {
+		log.Fatal(err)
+	}
 
-	// // start the web server
-	// startServer(idx)
+	// start the web server
+	startServer(idx)
 
-	// tracked := make(map[string]map[string]int)
-	// time.Sleep(150 * time.Millisecond) // wait for server to start
+	tracked := make(map[string]map[string]int)
+	time.Sleep(150 * time.Millisecond) // wait for server to start
 
-	// // Start the crawler in its own goroutine,
-	// go crawl(*seed, tracked, idx) // crawl the corpus starting from the seed URL, call AddDocument for each page
+	// Start the crawler in its own goroutine,
+	log.Println("Starting crawler on", *seed)
+	crawl(*seed, tracked, idx) // crawl the corpus starting from the seed URL
+	log.Println("Crawling complete")
 
 	// // keep process alive
 	// select {}

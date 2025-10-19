@@ -5,17 +5,23 @@ import (
 	"net/http"
 )
 
+// DOWNLOAD RESULT TYPE //
+type DownloadResult struct {
+	URL  string
+	Body []byte
+	Err  error
+}
+
 // DOWNLOAD //
-func download(DIn chan, DOut chan) {
+func download(DIn chan string, DOut chan DownloadResult) {
 	for url := range DIn {
 		body, err := downloadHelper(url)
 		if err != nil {
 			print("Error downloading URL:", url, err)
 			continue
 		}
-		DOut <- body
+		DOut <- DownloadResult{URL: url, Body: body, Err: err}
 	}
-	close(DOut) // why do we need this?
 }
 
 func downloadHelper(url string) ([]byte, error) {
@@ -27,6 +33,5 @@ func downloadHelper(url string) ([]byte, error) {
 	body, err := io.ReadAll(resp.Body)
 	defer resp.Body.Close()
 
-	// print(string(body))
 	return body, err
 }
