@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -13,6 +14,7 @@ type hostRules struct {
 	disallow []string      // each Disallow line compiled into a regex --> pattern
 	delay    time.Duration // how long to wait
 	lastF    time.Time     // last time we downloaded from this host
+	mu       sync.Mutex    // prevent race conditions, only one goroutine can access a shared resource at a time
 }
 
 var robots = make(map[string]*hostRules)    // per-host rules: key = host, value = pointer to host’s rules
@@ -87,6 +89,8 @@ func isDisallowed(r *hostRules, path string) bool { // does path match any Disal
 }
 
 func waitForDelay(r *hostRules) {
+	r.mu.Lock()         // lock the hostRules while we check and update lastF
+	defer r.mu.Unlock() // unlock when done
 	wait := r.delay - time.Since(r.lastF)
 	if wait > 0 {
 		time.Sleep(wait)

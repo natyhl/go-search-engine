@@ -77,9 +77,9 @@ func (s *SqlIndex) AddWord(url, word string) {
 	}
 
 	var docID int64
-	err := s.db.QueryRow(`SELECT doc_id FROM documents WHERE url = ?`, url).Scan(&docID) // CHANGED: s.db (not idx.db)
-	if err == sql.ErrNoRows {                                                            // ErrNoRows is returned by Row.Scan when DB.QueryRow doesn't return a row. In such a case, QueryRow returns a placeholder *Row value that defers this error until a Scan
-		res, err := s.db.Exec(`INSERT INTO documents(url, doc_length) VALUES(?, 0)`, url) // CHANGED
+	err := s.db.QueryRow(`SELECT doc_id FROM documents WHERE url = ?`, url).Scan(&docID)
+	if err == sql.ErrNoRows { // ErrNoRows is returned by Row.Scan when DB.QueryRow doesn't return a row. In such a case, QueryRow returns a placeholder *Row value that defers this error until a Scan
+		res, err := s.db.Exec(`INSERT INTO documents(url, doc_length) VALUES(?, 0)`, url)
 		if err != nil {
 			log.Println("insert documents:", err)
 			return
@@ -125,20 +125,79 @@ func (s *SqlIndex) AddWord(url, word string) {
 func (s *SqlIndex) AddDocument(url string, words []string) {
 	tx, err := s.db.Begin() // start transaction
 	if err != nil {
+		log.Println("begin transaction:", err)
 		return
 	}
 
-	if _, err := s.db.Exec(`INSERT INTO documents(url, doc_length) VALUES(?, 0)`, url, len(words)); err != nil {
+	if _, err := tx.Exec(`INSERT OR IGNORE INTO documents(url, doc_length) VALUES(?, 0)`, url); err != nil {
 		log.Println("insert documents:", err)
+		tx.Rollback() // reverses all data modifications performed since the beginning of the current transaction
 		return
 	}
 
 	for _, w := range words {
-		s.AddWord(url, w)
+		if err := addWordInTransaction(tx, url, w); err != nil {
+			log.Println("add word in transaction:", err)
+			tx.Rollback()
+			return
+		}
 	}
 	if err := tx.Commit(); err != nil {
+		log.Println("commit transaction:", err)
 		return
 	}
+}
+
+func addWordInTransaction(tx *sql.Tx, url, word string) error {
+	w := strings.ToLower(strings.TrimSpace(word))
+	if w == "" {
+		return nil
+	}
+
+	stemmed, _ := snowball.Stem(w, "english", true)
+	if stemmed == "" {
+		return nil
+	}
+
+	var docID int64
+	err := tx.QueryRow(`SELECT doc_id FROM documents WHERE url = ?`, url).Scan(&docID)
+	if err == sql.ErrNoRows {
+		res, err := tx.Exec(`INSERT INTO documents(url, doc_length) VALUES(?, 0)`, url)
+		if err != nil {
+			return err
+		}
+		docID, _ = res.LastInsertId()
+	} else if err != nil {
+		return err
+	}
+
+	var termID int64
+	err = tx.QueryRow(`SELECT term_id FROM terms WHERE term = ?`, stemmed).Scan(&termID)
+	if err == sql.ErrNoRows {
+		res, err := tx.Exec(`INSERT INTO terms(term) VALUES(?)`, stemmed)
+		if err != nil {
+			return err
+		}
+		termID, _ = res.LastInsertId()
+	} else if err != nil {
+		return err
+	}
+
+	if _, err := tx.Exec(`
+		INSERT INTO frequencies(term_id, doc_id, tf)
+		VALUES(?, ?, 1)
+		ON CONFLICT(term_id, doc_id) DO UPDATE SET tf = tf + 1;
+	`, termID, docID); err != nil {
+		return err
+	}
+
+	if _, err := tx.Exec(`
+		UPDATE documents SET doc_length = doc_length + 1 WHERE doc_id = ?;
+	`, docID); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (s *SqlIndex) Search(term string) Hits {

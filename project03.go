@@ -1,11 +1,11 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
-	"fmt"
+	"html/template"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -20,10 +20,35 @@ func startServer(idx Index) {
 		q := r.URL.Query().Get("q")
 		hits := idx.TFIDF(q)
 
-		fmt.Fprintln(w, "search term:", q)
-		_ = json.NewEncoder(w).Encode(hits)
-	})
+		// template data
+		type Hit struct {
+			Url   string
+			Title string
+		}
 
+		var hrefs []Hit
+		for _, h := range hits {
+			title := pageTitle(h.URL)
+			hrefs = append(hrefs, Hit{Url: h.URL, Title: title})
+		}
+
+		tmpl := `<html><body><h2>Results for "{{.Query}}"</h2>{{range .Hits}}<p><a href="{{.Url}}">{{.Title}}</a></p>{{end}}</body></html>`
+		//empty HTML template object named "page", parse into template format
+		t, err := template.New("page").Parse(tmpl)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		data := struct {
+			Query string
+			Hits  []Hit
+		}{
+			Query: q,
+			Hits:  hrefs,
+		}
+
+		t.Execute(w, data) // CHANGED: execute template with hrefs
+	})
 	go func() {
 		addr := ":8080"
 		log.Println("Listening on", addr)
@@ -36,12 +61,33 @@ func startServer(idx Index) {
 	//display search results in the browser, write to local host - make URL instead(href)
 }
 
+// helper to get <title> text
+func pageTitle(u string) string {
+	body, err := downloadHelper(u)
+	if err != nil || len(body) == 0 {
+		return u
+	}
+	s := string(body)
+	lo := strings.ToLower(s)
+	i := strings.Index(lo, "<title>")
+	j := strings.Index(lo, "</title>")
+	if i >= 0 && j > i {
+		i += len("<title>")
+		t := strings.TrimSpace(s[i:j])
+		if t != "" {
+			return t
+		}
+	}
+	return u
+}
+
 func main() {
-	indexOpt := flag.String("index", "inmem", "index backend: inmem | sqlite")               // default to in-memory index
+	indexOpt := flag.String("index", "sqlite", "index backend: inmem | sqlite")              // default to sqlite
 	dbPath := flag.String("db", "project04.db", "sqlite database file (when -index=sqlite)") // defines a -db flag for the SQLite file path (used only when -index=sqlite)
 	resetDB := flag.Bool("reset", false, "drop & recreate sqlite tables on startup")
 	seed := flag.String("seed", "http://127.0.0.1:8080/top10/", "seed URL to crawl") // choose the starting URL for the crawler, default to local ./top10
-	flag.Parse()                                                                     // parse the command-line flags and populates the pointers above
+	// seed := flag.String("seed", "https://www.usfca.edu/", "seed URL to crawl")
+	flag.Parse() // parse the command-line flags and populates the pointers above
 
 	idx, err := NewIndex(*indexOpt, *dbPath, *resetDB)
 	if err != nil {
@@ -59,10 +105,6 @@ func main() {
 	crawl(*seed, tracked, idx) // crawl the corpus starting from the seed URL
 	log.Println("Crawling complete")
 
-	// // keep process alive
-	// select {}
-
-	//!! use only sqlite instead
-	// crawl USF website
+	// **crawl USF website
 
 }
