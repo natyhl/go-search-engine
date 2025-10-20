@@ -19,6 +19,8 @@ type ExtractResult struct {
 func extract(Dout chan DownloadResult, EOut chan ExtractResult) {
 	for result := range Dout {
 		if result.Err != nil { // skip if download had an error
+			// **CHANGED: Still send to EOut so main goroutine can decrement counter**
+			EOut <- ExtractResult{URL: result.URL, Words: nil, Hrefs: nil}
 			continue
 		}
 		w, h := extractHelper(result.Body)

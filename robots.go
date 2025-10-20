@@ -15,22 +15,47 @@ type hostRules struct {
 	delay    time.Duration // how long to wait
 	lastF    time.Time     // last time we downloaded from this host
 	mu       sync.Mutex    // prevent race conditions, only one goroutine can access a shared resource at a time
+	initialized bool      // CHANGED: set true once robots.txt parsed
 }
 
 var robots = make(map[string]*hostRules)    // per-host rules: key = host, value = pointer to host’s rules
+var robotsMu sync.Mutex // CHANGED: protect the global robots map
 const defaultDelay = 100 * time.Millisecond //given by spec
 
 func rulesForHost(u *url.URL) *hostRules { // build rules for a host if not already done
 	host := u.Host                 // extract host from URL
-	if r, ok := robots[host]; ok { //if we already have rules return them
+
+	// robotsMu.Lock()                // CHANGED: serialize access/creation
+	// if r, ok := robots[host]; ok { //if we already have rules return them
+	// 	robotsMu.Unlock()          // CHANGED
+	// 	return r
+	// }
+
+	// r := &hostRules{delay: defaultDelay} // create a *hostRules with default delay
+	// robots[host] = r               // CHANGED: write under the lock
+	// robotsMu.Unlock()              // CHANGED: done touching the map
+
+	robotsMu.Lock()
+	r, ok := robots[host]
+	if !ok {
+		// Insert a placeholder BEFORE network I/O so others see a non-nil pointer.
+		r = &hostRules{delay: defaultDelay}
+		robots[host] = r // CHANGED: single write to the map under lock
+	}
+	robotsMu.Unlock()
+
+	// Initialize r exactly once; serialize with r.mu so readers won’t race while we fill fields.
+	r.mu.Lock()
+	if r.initialized {
+		r.mu.Unlock()
 		return r
 	}
 
-	r := &hostRules{delay: defaultDelay} // create a *hostRules with default delay
-
 	resp, _ := http.Get(u.Scheme + "://" + host + "/robots.txt") // try to download robots.txt
 	if resp == nil {
-		robots[host] = r
+		//robots[host] = r
+		r.initialized = true // CHANGED
+		r.mu.Unlock()
 		return r
 	}
 	defer resp.Body.Close() // always close the body of an HTTP request
@@ -73,7 +98,9 @@ func rulesForHost(u *url.URL) *hostRules { // build rules for a host if not alre
 			}
 		}
 	}
-	robots[host] = r
+	//robots[host] = r
+	r.initialized = true // CHANGED
+	r.mu.Unlock()
 	return r
 }
 

@@ -3,6 +3,7 @@ package main
 import (
 	"net/url"
 	"strings"
+	"log"
 
 	"github.com/kljensen/snowball"
 )
@@ -22,7 +23,7 @@ func crawl(seedUrl string, freqmap map[string]map[string]int, idx Index) map[str
 		go download(DIn, DOut)
 		go extract(DOut, EOut)
 		go clean(CIn, COut)
-		go indexer(EOut, idx) //**describe why
+		//go indexer(EOut, idx) //**describe why
 	}
 
 	visited := make(map[string]bool)
@@ -38,13 +39,32 @@ func crawl(seedUrl string, freqmap map[string]map[string]int, idx Index) map[str
 		select { // listens to multiple channels simultaneously and executes whichever case is ready
 		case cleanedURL := <-COut:
 			pendingCleans--
-			if !visited[cleanedURL] {
+			if !visited[cleanedURL] && cleanedURL != "" {
 				queue = append(queue, cleanedURL)
 			}
 		case result := <-EOut:
 			pendingDownloads-- // download->extract cycle complete
 			// process result
 			currentURL := result.URL
+
+			// **ADDED: Index here in main goroutine**
+			if idx != nil && len(result.Words) > 0 {
+				var kept []string
+				for _, w := range result.Words {
+					wl := strings.ToLower(w)
+					if _, isStop := stopSet[wl]; isStop {
+						continue
+					}
+					stemmed, _ := snowball.Stem(wl, "english", true)
+					if stemmed == "" {
+						continue
+					}
+					kept = append(kept, stemmed)
+				}
+				if len(kept) > 0 {
+					idx.AddDocument(currentURL, kept)
+				}
+			}
 
 			for _, h := range result.Hrefs {
 				CIn <- CleanInput{Base: currentURL, Href: h}
@@ -117,41 +137,69 @@ func crawl(seedUrl string, freqmap map[string]map[string]int, idx Index) map[str
 	close(DIn)
 	close(CIn)
 
+	log.Printf("Closed channels. Starting drain. pendingDownloads=%d, pendingCleans=%d", 
+    pendingDownloads, pendingCleans)
+
 	for pendingDownloads > 0 || pendingCleans > 0 {
 		select {
 		case <-COut:
 			pendingCleans--
-		case <-EOut:
+			log.Printf("Drained clean. pendingCleans=%d", pendingCleans)
+		case result := <-EOut:
 			pendingDownloads--
+			log.Printf("Drained extract. pendingDownloads=%d", pendingDownloads)
+			// **ADDED: Still index during draining**
+			if idx != nil && len(result.Words) > 0 {
+				var kept []string
+				for _, w := range result.Words {
+					wl := strings.ToLower(w)
+					if _, isStop := stopSet[wl]; isStop {
+						continue
+					}
+					stemmed, _ := snowball.Stem(wl, "english", true)
+					if stemmed == "" {
+						continue
+					}
+					kept = append(kept, stemmed)
+				}
+				if len(kept) > 0 {
+					idx.AddDocument(result.URL, kept)
+				}
+			}
 		}
 	}
-
+	// ADDED: Close output channels so workers can exit
+	close(DOut)
+	close(EOut)
+	close(COut)
+	
+	log.Println("Draining complete!")
 	return freqmap
 }
 
-func indexer(EOut chan ExtractResult, idx Index) { // put cleaned, stemmed words into the index
-	stopword, _ := LoadStopwords("stopwords-en.json")
-	stopSet := StopwordSet(stopword)
+// func indexer(EOut chan ExtractResult, idx Index) { // put cleaned, stemmed words into the index
+// 	stopword, _ := LoadStopwords("stopwords-en.json")
+// 	stopSet := StopwordSet(stopword)
 
-	for result := range EOut { // keep reading until channel is closed
-		var kept []string
+// 	for result := range EOut { // keep reading until channel is closed
+// 		var kept []string
 
-		for _, w := range result.Words {
-			wl := strings.ToLower(w)
-			if _, isStop := stopSet[wl]; isStop {
-				continue // skip stopwords
-			}
+// 		for _, w := range result.Words {
+// 			wl := strings.ToLower(w)
+// 			if _, isStop := stopSet[wl]; isStop {
+// 				continue // skip stopwords
+// 			}
 
-			stemmed, _ := snowball.Stem(wl, "english", true)
-			if stemmed == "" {
-				continue
-			}
+// 			stemmed, _ := snowball.Stem(wl, "english", true)
+// 			if stemmed == "" {
+// 				continue
+// 			}
 
-			kept = append(kept, stemmed)
-		}
+// 			kept = append(kept, stemmed)
+// 		}
 
-		if idx != nil && len(kept) > 0 {
-			idx.AddDocument(result.URL, kept)
-		}
-	}
-}
+// 		if idx != nil && len(kept) > 0 {
+// 			idx.AddDocument(result.URL, kept)
+// 		}
+// 	}
+// }

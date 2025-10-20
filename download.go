@@ -16,10 +16,10 @@ type DownloadResult struct {
 func download(DIn chan string, DOut chan DownloadResult) {
 	for url := range DIn {
 		body, err := downloadHelper(url)
-		if err != nil {
-			print("Error downloading URL:", url, err)
-			continue
-		}
+		// if err != nil {
+		// 	print("Error downloading URL:", url, err)
+		// 	continue
+		// }
 		DOut <- DownloadResult{URL: url, Body: body, Err: err}
 	}
 }
@@ -30,8 +30,8 @@ func downloadHelper(url string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	body, err := io.ReadAll(resp.Body)
 	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
 
 	return body, err
 }
