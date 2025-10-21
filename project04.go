@@ -12,17 +12,18 @@ import (
 
 // startServer serves ./top10 at /top10/ and exposes /search?q=...
 func startServer(idx Index) {
-	// add field for searching directly on website
 	// Serve local corpus at http://127.0.0.1:8080/top10/
 	http.Handle("/top10/", http.StripPrefix("/top10/", http.FileServer(http.Dir("./top10"))))
 
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { // CHANGED
-		if r.URL.Path == "/" { // CHANGED
-			http.Redirect(w, r, "/search", http.StatusFound) // CHANGED
-			return                                           // CHANGED
-		} // CHANGED
-		http.NotFound(w, r) // CHANGED
-	}) //
+	// Handle requests to http://localhost:8080/
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { 
+		if r.URL.Path == "/" { // If user visits the root path exactly
+			// Redirect them to /search
+			http.Redirect(w, r, "/search", http.StatusFound) 
+			return                                           
+		} 
+		http.NotFound(w, r) // If user visits any other path, return 404
+	}) 
 
 	// search endpoint that returns TF-IDF hits as JSON
 	http.HandleFunc("/search", func(w http.ResponseWriter, r *http.Request) {
@@ -38,12 +39,11 @@ func startServer(idx Index) {
 		var hrefs []Hit
 		for _, h := range hits {
 			title := pageTitle(h.URL)
-			// **ADDED: If all titles are the same, show URL instead**
+			// **If all titles are the same, show URL instead**
 			if title == "" {
 				title = h.URL
 			}
 			
-			// **ADDED: Append URL path to title for uniqueness**
 			u, _ := url.Parse(h.URL)
 			if u != nil && u.Path != "" && u.Path != "/" {
 				// Extract just the filename
@@ -54,7 +54,6 @@ func startServer(idx Index) {
 			hrefs = append(hrefs, Hit{Url: h.URL, Title: title})
 		}
 
-		//tmpl := `<html><body><h2>Results for "{{.Query}}"</h2>{{range .Hits}}<p><a href="{{.Url}}">{{.Title}}</a></p>{{end}}</body></html>`
 		tmpl := `
 	<html>
 	<body>
@@ -91,9 +90,12 @@ func startServer(idx Index) {
 			Hits:  hrefs,
 		}
 
+		// Set response header to indicate HTML content with UTF-8 encoding
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		t.Execute(w, data)
+		t.Execute(w, data) // Write to response
 	})
+
+	// Launch server in background goroutine so main() can continue
 	go func() {
 		addr := ":8080"
 		log.Println("Listening on", addr)
@@ -130,8 +132,8 @@ func main() {
 	indexOpt := flag.String("index", "sqlite", "index backend: inmem | sqlite")              // default to sqlite
 	dbPath := flag.String("db", "project04.db", "sqlite database file (when -index=sqlite)") // defines a -db flag for the SQLite file path (used only when -index=sqlite)
 	resetDB := flag.Bool("reset", false, "drop & recreate sqlite tables on startup")
-	seed := flag.String("seed", "http://127.0.0.1:8080/top10/", "seed URL to crawl") // choose the starting URL for the crawler, default to local ./top10
-	//seed := flag.String("seed", "https://www.usfca.edu/", "seed URL to crawl")
+	//seed := flag.String("seed", "http://127.0.0.1:8080/top10/", "seed URL to crawl") // choose the starting URL for the crawler, default to local ./top10
+	seed := flag.String("seed", "https://www.usfca.edu/", "seed URL to crawl")
 	flag.Parse() // parse the command-line flags and populates the pointers above
 
 	idx, err := NewIndex(*indexOpt, *dbPath, *resetDB)
@@ -149,7 +151,5 @@ func main() {
 	log.Println("Starting crawler on", *seed)
 	crawl(*seed, tracked, idx) // crawl the corpus starting from the seed URL
 	log.Println("Crawling complete")
-
-	// **crawl USF website
 
 }

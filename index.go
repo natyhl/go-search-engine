@@ -89,8 +89,7 @@ func computeTFIDF(src TFIDFData, query string) Hits {
 
 	df := len(postings) // document frequency: how many documents contain the term - # docs containing term
 	// IDF = log(N / (df + 1))
-	idf := math.Log(float64(n) / float64(df+1)) //*****!!!!
-	//idf := math.Log(float64(n) / float64(df))
+	idf := math.Log(float64(n) / float64(df+1)) 
 
 	var hits Hits
 	for _, p := range postings { // Iterates over each document URL u that contains the term - cnt is term count in that document

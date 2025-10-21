@@ -10,6 +10,8 @@ import (
 )
 
 // CRAWL: given a list of URLs, download each page, extract words and hrefs, clean the hrefs, return the cleaned hrefs
+// starts from seedURL
+// returns: the populated freqmap
 func crawl(seedUrl string, freqmap map[string]map[string]int, idx Index) map[string]map[string]int {
 
 	// make channels of size 10000
@@ -24,10 +26,9 @@ func crawl(seedUrl string, freqmap map[string]map[string]int, idx Index) map[str
 		go download(DIn, DOut)
 		go extract(DOut, EOut)
 		go clean(CIn, COut)
-		//go indexer(EOut, idx) //**describe why
 	}
 
-	visited := make(map[string]bool)
+	visited := make(map[string]bool) // we already crawled
 	queue := []string{seedUrl} // queue of URLs to visit
 
 	stopwords, _ := LoadStopwords("stopwords-en.json")
@@ -36,14 +37,17 @@ func crawl(seedUrl string, freqmap map[string]map[string]int, idx Index) map[str
 	pendingDownloads := 0 // helpers to stop the for loop when all done
 	pendingCleans := 0
 
-	// Add timeout mechanism
+	// timeout mechanism - detect when crawler is stuck
 	lastProgress := time.Now()
-	progressTicker := time.NewTicker(5 * time.Second)
-	defer progressTicker.Stop()
+	progressTicker := time.NewTicker(5 * time.Second) // Log progress every 5 seconds
+	defer progressTicker.Stop() // Clean up timer when function exits
 
+	// CRAWL LOOP //
 	for len(queue) > 0 || pendingDownloads > 0 || pendingCleans > 0 { // download and cleaning in progress
 		select { // listens to multiple channels simultaneously and executes whichever case is ready
+			
 		case <-progressTicker.C:
+			// Every 5 seconds, log current state
 			log.Printf("Progress: queue=%d, visited=%d, pendingDownloads=%d, pendingCleans=%d", 
 				len(queue), len(visited), pendingDownloads, pendingCleans)
 			
@@ -51,17 +55,13 @@ func crawl(seedUrl string, freqmap map[string]map[string]int, idx Index) map[str
 			if time.Since(lastProgress) > 30*time.Second {
 				log.Printf("WARNING: No progress for 30s. Breaking out. pendingDownloads=%d, pendingCleans=%d",
 					pendingDownloads, pendingCleans)
-				// Force break by clearing counters
-				// pendingDownloads = 0
-				// pendingCleans = 0
-				// break
-				goto drain //**describe
-			} // END OF ADDED
+				goto drain // Jump to drain section to clean up
+			} 
 
 		case cleanedURL := <-COut:
 			pendingCleans--
-			lastProgress = time.Now() // ADDED: Update progress timestamp
-			if cleanedURL != "" && !visited[cleanedURL] { // CHANGED
+			lastProgress = time.Now() // Update progress timestamp
+			if cleanedURL != "" && !visited[cleanedURL] {
 				queue = append(queue, cleanedURL)
 			}
 		case result := <-EOut:
@@ -69,7 +69,7 @@ func crawl(seedUrl string, freqmap map[string]map[string]int, idx Index) map[str
 			// process result
 			currentURL := result.URL
 
-			// **ADDED: Index here in main goroutine**
+			// Index the document
 			if idx != nil && len(result.Words) > 0 {
 				var kept []string
 				for _, w := range result.Words {
@@ -88,12 +88,13 @@ func crawl(seedUrl string, freqmap map[string]map[string]int, idx Index) map[str
 				}
 			}
 
+			// Send links to clean()
 			for _, h := range result.Hrefs {
 				CIn <- CleanInput{Base: currentURL, Href: h}
 				pendingCleans++
 			}
 
-			// Process words for freqmap only (indexer handles DB)
+			// Process words for freqmap 
 			if freqmap != nil {
 				for _, w := range result.Words {
 					wl := strings.ToLower(w)
@@ -120,8 +121,6 @@ func crawl(seedUrl string, freqmap map[string]map[string]int, idx Index) map[str
 		default:
 			// no channels ready, process next URL in queue
 			if len(queue) == 0 {
-				// Small sleep to prevent busy waiting
-				time.Sleep(10 * time.Millisecond)
 				continue
 			}
 
@@ -157,7 +156,6 @@ func crawl(seedUrl string, freqmap map[string]map[string]int, idx Index) map[str
 		}
 	}
 
-	//ADDED
 	drain:
 	//Close channels when done, signal workers to stop
 	close(DIn)
@@ -166,23 +164,30 @@ func crawl(seedUrl string, freqmap map[string]map[string]int, idx Index) map[str
 	log.Printf("Main loop done. Draining remaining results. pendingDownloads=%d, pendingCleans=%d", 
 		pendingDownloads, pendingCleans)
 
-	drainStart := time.Now() //ADDED
-	drainTimeout := 5 * time.Second // REDUCED from 10s to 5s
+	// DRAIN REMAINING DATA //
+	drainStart := time.Now() 
+	drainTimeout := 5 * time.Second // Max time to wait
+
+	// Keep receiving until all pending work is done
 	for pendingDownloads > 0 || pendingCleans > 0 {
 		if time.Since(drainStart) > drainTimeout {
 			log.Printf("WARNING: Drain timeout after 10s. Forcing exit. pendingDownloads=%d, pendingCleans=%d",
 				pendingDownloads, pendingCleans)
 			break
-		} //ADDED if block
+		} 
 		select {
-		//case <-COut:
+
+		// Receive any remaining cleaned URLs
 		case cleanedURL := <-COut:
 			pendingCleans--
 			log.Printf("Drained clean. pendingCleans=%d, url=%s", pendingCleans, cleanedURL)
+
+		// Receive any remaining extracted results
 		case result := <-EOut:
 			pendingDownloads--
 			log.Printf("Drained extract. pendingDownloads=%d", pendingDownloads)
-			// **ADDED: Still index during draining**
+
+			// **Still index during draining** //
 			if idx != nil && len(result.Words) > 0 {
 				var kept []string
 				for _, w := range result.Words {
@@ -200,7 +205,9 @@ func crawl(seedUrl string, freqmap map[string]map[string]int, idx Index) map[str
 					idx.AddDocument(result.URL, kept)
 				}
 			}
+		// If nothing arrives for 100ms
 		case <-time.After(100 * time.Millisecond):
+			// Stuck for 2 sec --> force exit
 			if time.Since(drainStart) > 2*time.Second {
 				log.Printf("Forcing drain completion after 2s of timeouts. Zeroing counters.")
 				pendingDownloads = 0
@@ -208,38 +215,8 @@ func crawl(seedUrl string, freqmap map[string]map[string]int, idx Index) map[str
 			}	
 		}
 	}
-	// // ADDED: Close output channels so workers can exit
-	// close(DOut)
-	// close(EOut)
-	// close(COut)
 
 	log.Printf("Crawl complete! Visited %d URLs", len(visited))
 	return freqmap
 }
 
-// func indexer(EOut chan ExtractResult, idx Index) { // put cleaned, stemmed words into the index
-// 	stopword, _ := LoadStopwords("stopwords-en.json")
-// 	stopSet := StopwordSet(stopword)
-
-// 	for result := range EOut { // keep reading until channel is closed
-// 		var kept []string
-
-// 		for _, w := range result.Words {
-// 			wl := strings.ToLower(w)
-// 			if _, isStop := stopSet[wl]; isStop {
-// 				continue // skip stopwords
-// 			}
-
-// 			stemmed, _ := snowball.Stem(wl, "english", true)
-// 			if stemmed == "" {
-// 				continue
-// 			}
-
-// 			kept = append(kept, stemmed)
-// 		}
-
-// 		if idx != nil && len(kept) > 0 {
-// 			idx.AddDocument(result.URL, kept)
-// 		}
-// 	}
-// }
