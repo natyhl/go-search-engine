@@ -21,12 +21,31 @@ func crawl(seedUrl string, freqmap map[string]map[string]int, idx Index) map[str
 	CIn := make(chan CleanInput, 10000)
 	COut := make(chan string, 10000) // clean output - going to pass to DIn
 
-	numWorkers := 3
-	for i := 0; i < numWorkers; i++ { // start 3 workers of each type
+	// numWorkers := 3
+	// for i := 0; i < numWorkers; i++ { // start 3 workers of each type
+	// 	go download(DIn, DOut)
+	// 	go extract(DOut, EOut)
+	// 	go clean(CIn, COut)
+	// }
+
+	//CHANGED//
+	// FIXED: Balance all workers
+	downloadWorkers := 20  // INCREASED: More downloads
+	extractWorkers := 10   // INCREASED: More extracts
+	cleanWorkers := 30     // INCREASED: Even more cleans
+	
+	for i := 0; i < downloadWorkers; i++ {
 		go download(DIn, DOut)
+	}
+	
+	for i := 0; i < extractWorkers; i++ {
 		go extract(DOut, EOut)
+	}
+	
+	for i := 0; i < cleanWorkers; i++ {
 		go clean(CIn, COut)
 	}
+	//CHANGED//
 
 	visited := make(map[string]bool) // we already crawled
 	queue := []string{seedUrl} // queue of URLs to visit
@@ -36,6 +55,7 @@ func crawl(seedUrl string, freqmap map[string]map[string]int, idx Index) map[str
 
 	pendingDownloads := 0 // helpers to stop the for loop when all done
 	pendingCleans := 0
+	maxQueueSize := 10000  // ADDED: Limit queue growth
 
 	// timeout mechanism - detect when crawler is stuck
 	lastProgress := time.Now()
@@ -44,6 +64,13 @@ func crawl(seedUrl string, freqmap map[string]map[string]int, idx Index) map[str
 
 	// CRAWL LOOP //
 	for len(queue) > 0 || pendingDownloads > 0 || pendingCleans > 0 { // download and cleaning in progress
+
+		// ADDED//
+		if len(visited) >= 5000 {
+			log.Printf("Reached 5000 pages. Stopping crawl.")
+			goto drain
+		}
+
 		select { // listens to multiple channels simultaneously and executes whichever case is ready
 			
 		case <-progressTicker.C:
@@ -52,6 +79,9 @@ func crawl(seedUrl string, freqmap map[string]map[string]int, idx Index) map[str
 				len(queue), len(visited), pendingDownloads, pendingCleans)
 			
 			// If stuck for more than 30 seconds, break
+			//if time.Since(lastProgress) > 30*time.Second {
+
+			// CHANGED: Longer timeout
 			if time.Since(lastProgress) > 30*time.Second {
 				log.Printf("WARNING: No progress for 30s. Breaking out. pendingDownloads=%d, pendingCleans=%d",
 					pendingDownloads, pendingCleans)
@@ -61,7 +91,7 @@ func crawl(seedUrl string, freqmap map[string]map[string]int, idx Index) map[str
 		case cleanedURL := <-COut:
 			pendingCleans--
 			lastProgress = time.Now() // Update progress timestamp
-			if cleanedURL != "" && !visited[cleanedURL] {
+			if cleanedURL != "" && !visited[cleanedURL] && len(queue) < maxQueueSize { //ADDED
 				queue = append(queue, cleanedURL)
 			}
 		case result := <-EOut:
@@ -166,21 +196,29 @@ func crawl(seedUrl string, freqmap map[string]map[string]int, idx Index) map[str
 
 	// DRAIN REMAINING DATA //
 	drainStart := time.Now() 
-	drainTimeout := 5 * time.Second // Max time to wait
+	// CHANGED to 10
+	drainTimeout := 30 * time.Second // Max time to wait
 
 	// Keep receiving until all pending work is done
 	for pendingDownloads > 0 || pendingCleans > 0 {
 		if time.Since(drainStart) > drainTimeout {
-			log.Printf("WARNING: Drain timeout after 10s. Forcing exit. pendingDownloads=%d, pendingCleans=%d",
-				pendingDownloads, pendingCleans)
+			// log.Printf("WARNING: Drain timeout after 10s. Forcing exit. pendingDownloads=%d, pendingCleans=%d",
+			// 	pendingDownloads, pendingCleans)
+			log.Printf("WARNING: Drain timeout after %v. Forcing exit. pendingDownloads=%d, pendingCleans=%d",
+				drainTimeout, pendingDownloads, pendingCleans)  // FIXED: Use drainTimeout variable
+			pendingDownloads = 0  // ADDED: Zero counters
+			pendingCleans = 0     // ADDED: Zero counters
 			break
 		} 
 		select {
 
 		// Receive any remaining cleaned URLs
-		case cleanedURL := <-COut:
+		// case cleanedURL := <-COut:
+		// 	pendingCleans--
+		// 	log.Printf("Drained clean. pendingCleans=%d, url=%s", pendingCleans, cleanedURL)
+
+		case <-COut:  // CHANGED: Don't need the URL during drain
 			pendingCleans--
-			log.Printf("Drained clean. pendingCleans=%d, url=%s", pendingCleans, cleanedURL)
 
 		// Receive any remaining extracted results
 		case result := <-EOut:
