@@ -4,6 +4,7 @@ import (
 	"net/url"
 	"strings"
 	"log"
+	"time"
 
 	"github.com/kljensen/snowball"
 )
@@ -35,11 +36,32 @@ func crawl(seedUrl string, freqmap map[string]map[string]int, idx Index) map[str
 	pendingDownloads := 0 // helpers to stop the for loop when all done
 	pendingCleans := 0
 
+	// Add timeout mechanism
+	lastProgress := time.Now()
+	progressTicker := time.NewTicker(5 * time.Second)
+	defer progressTicker.Stop()
+
 	for len(queue) > 0 || pendingDownloads > 0 || pendingCleans > 0 { // download and cleaning in progress
 		select { // listens to multiple channels simultaneously and executes whichever case is ready
+		case <-progressTicker.C:
+			log.Printf("Progress: queue=%d, visited=%d, pendingDownloads=%d, pendingCleans=%d", 
+				len(queue), len(visited), pendingDownloads, pendingCleans)
+			
+			// If stuck for more than 30 seconds, break
+			if time.Since(lastProgress) > 30*time.Second {
+				log.Printf("WARNING: No progress for 30s. Breaking out. pendingDownloads=%d, pendingCleans=%d",
+					pendingDownloads, pendingCleans)
+				// Force break by clearing counters
+				// pendingDownloads = 0
+				// pendingCleans = 0
+				// break
+				goto drain //**describe
+			} // END OF ADDED
+
 		case cleanedURL := <-COut:
 			pendingCleans--
-			if !visited[cleanedURL] && cleanedURL != "" {
+			lastProgress = time.Now() // ADDED: Update progress timestamp
+			if cleanedURL != "" && !visited[cleanedURL] { // CHANGED
 				queue = append(queue, cleanedURL)
 			}
 		case result := <-EOut:
@@ -98,6 +120,8 @@ func crawl(seedUrl string, freqmap map[string]map[string]int, idx Index) map[str
 		default:
 			// no channels ready, process next URL in queue
 			if len(queue) == 0 {
+				// Small sleep to prevent busy waiting
+				time.Sleep(10 * time.Millisecond)
 				continue
 			}
 
@@ -133,18 +157,28 @@ func crawl(seedUrl string, freqmap map[string]map[string]int, idx Index) map[str
 		}
 	}
 
+	//ADDED
+	drain:
 	//Close channels when done, signal workers to stop
 	close(DIn)
 	close(CIn)
 
-	log.Printf("Closed channels. Starting drain. pendingDownloads=%d, pendingCleans=%d", 
-    pendingDownloads, pendingCleans)
+	log.Printf("Main loop done. Draining remaining results. pendingDownloads=%d, pendingCleans=%d", 
+		pendingDownloads, pendingCleans)
 
+	drainStart := time.Now() //ADDED
+	drainTimeout := 5 * time.Second // REDUCED from 10s to 5s
 	for pendingDownloads > 0 || pendingCleans > 0 {
+		if time.Since(drainStart) > drainTimeout {
+			log.Printf("WARNING: Drain timeout after 10s. Forcing exit. pendingDownloads=%d, pendingCleans=%d",
+				pendingDownloads, pendingCleans)
+			break
+		} //ADDED if block
 		select {
-		case <-COut:
+		//case <-COut:
+		case cleanedURL := <-COut:
 			pendingCleans--
-			log.Printf("Drained clean. pendingCleans=%d", pendingCleans)
+			log.Printf("Drained clean. pendingCleans=%d, url=%s", pendingCleans, cleanedURL)
 		case result := <-EOut:
 			pendingDownloads--
 			log.Printf("Drained extract. pendingDownloads=%d", pendingDownloads)
@@ -166,14 +200,20 @@ func crawl(seedUrl string, freqmap map[string]map[string]int, idx Index) map[str
 					idx.AddDocument(result.URL, kept)
 				}
 			}
+		case <-time.After(100 * time.Millisecond):
+			if time.Since(drainStart) > 2*time.Second {
+				log.Printf("Forcing drain completion after 2s of timeouts. Zeroing counters.")
+				pendingDownloads = 0
+				pendingCleans = 0
+			}	
 		}
 	}
-	// ADDED: Close output channels so workers can exit
-	close(DOut)
-	close(EOut)
-	close(COut)
-	
-	log.Println("Draining complete!")
+	// // ADDED: Close output channels so workers can exit
+	// close(DOut)
+	// close(EOut)
+	// close(COut)
+
+	log.Printf("Crawl complete! Visited %d URLs", len(visited))
 	return freqmap
 }
 

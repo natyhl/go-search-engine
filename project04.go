@@ -131,7 +131,7 @@ func main() {
 	dbPath := flag.String("db", "project04.db", "sqlite database file (when -index=sqlite)") // defines a -db flag for the SQLite file path (used only when -index=sqlite)
 	resetDB := flag.Bool("reset", false, "drop & recreate sqlite tables on startup")
 	seed := flag.String("seed", "http://127.0.0.1:8080/top10/", "seed URL to crawl") // choose the starting URL for the crawler, default to local ./top10
-	// seed := flag.String("seed", "https://www.usfca.edu/", "seed URL to crawl")
+	//seed := flag.String("seed", "https://www.usfca.edu/", "seed URL to crawl")
 	flag.Parse() // parse the command-line flags and populates the pointers above
 
 	idx, err := NewIndex(*indexOpt, *dbPath, *resetDB)
