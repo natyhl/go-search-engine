@@ -21,18 +21,10 @@ func crawl(seedUrl string, freqmap map[string]map[string]int, idx Index) map[str
 	CIn := make(chan CleanInput, 10000)
 	COut := make(chan string, 10000) // clean output - going to pass to DIn
 
-	// numWorkers := 3
-	// for i := 0; i < numWorkers; i++ { // start 3 workers of each type
-	// 	go download(DIn, DOut)
-	// 	go extract(DOut, EOut)
-	// 	go clean(CIn, COut)
-	// }
-
-	//CHANGED//
-	// FIXED: Balance all workers
-	downloadWorkers := 20  // INCREASED: More downloads
-	extractWorkers := 10   // INCREASED: More extracts
-	cleanWorkers := 30     // INCREASED: Even more cleans
+	// start workers of each type
+	downloadWorkers := 20  
+	extractWorkers := 10   
+	cleanWorkers := 30     
 	
 	for i := 0; i < downloadWorkers; i++ {
 		go download(DIn, DOut)
@@ -45,7 +37,6 @@ func crawl(seedUrl string, freqmap map[string]map[string]int, idx Index) map[str
 	for i := 0; i < cleanWorkers; i++ {
 		go clean(CIn, COut)
 	}
-	//CHANGED//
 
 	visited := make(map[string]bool) // we already crawled
 	queue := []string{seedUrl} // queue of URLs to visit
@@ -55,7 +46,7 @@ func crawl(seedUrl string, freqmap map[string]map[string]int, idx Index) map[str
 
 	pendingDownloads := 0 // helpers to stop the for loop when all done
 	pendingCleans := 0
-	maxQueueSize := 10000  // ADDED: Limit queue growth
+	maxQueueSize := 10000  // Limit queue growth
 
 	// timeout mechanism - detect when crawler is stuck
 	lastProgress := time.Now()
@@ -79,9 +70,6 @@ func crawl(seedUrl string, freqmap map[string]map[string]int, idx Index) map[str
 				len(queue), len(visited), pendingDownloads, pendingCleans)
 			
 			// If stuck for more than 30 seconds, break
-			//if time.Since(lastProgress) > 30*time.Second {
-
-			// CHANGED: Longer timeout
 			if time.Since(lastProgress) > 30*time.Second {
 				log.Printf("WARNING: No progress for 30s. Breaking out. pendingDownloads=%d, pendingCleans=%d",
 					pendingDownloads, pendingCleans)
@@ -91,7 +79,7 @@ func crawl(seedUrl string, freqmap map[string]map[string]int, idx Index) map[str
 		case cleanedURL := <-COut:
 			pendingCleans--
 			lastProgress = time.Now() // Update progress timestamp
-			if cleanedURL != "" && !visited[cleanedURL] && len(queue) < maxQueueSize { //ADDED
+			if cleanedURL != "" && !visited[cleanedURL] && len(queue) < maxQueueSize { 
 				queue = append(queue, cleanedURL)
 			}
 		case result := <-EOut:
@@ -196,28 +184,21 @@ func crawl(seedUrl string, freqmap map[string]map[string]int, idx Index) map[str
 
 	// DRAIN REMAINING DATA //
 	drainStart := time.Now() 
-	// CHANGED to 10
 	drainTimeout := 30 * time.Second // Max time to wait
 
 	// Keep receiving until all pending work is done
 	for pendingDownloads > 0 || pendingCleans > 0 {
 		if time.Since(drainStart) > drainTimeout {
-			// log.Printf("WARNING: Drain timeout after 10s. Forcing exit. pendingDownloads=%d, pendingCleans=%d",
-			// 	pendingDownloads, pendingCleans)
 			log.Printf("WARNING: Drain timeout after %v. Forcing exit. pendingDownloads=%d, pendingCleans=%d",
-				drainTimeout, pendingDownloads, pendingCleans)  // FIXED: Use drainTimeout variable
-			pendingDownloads = 0  // ADDED: Zero counters
-			pendingCleans = 0     // ADDED: Zero counters
+				drainTimeout, pendingDownloads, pendingCleans)  
+			// Force counters to zero to exit loop
+			pendingDownloads = 0  
+			pendingCleans = 0     
 			break
 		} 
 		select {
 
-		// Receive any remaining cleaned URLs
-		// case cleanedURL := <-COut:
-		// 	pendingCleans--
-		// 	log.Printf("Drained clean. pendingCleans=%d, url=%s", pendingCleans, cleanedURL)
-
-		case <-COut:  // CHANGED: Don't need the URL during drain
+		case <-COut:  
 			pendingCleans--
 
 		// Receive any remaining extracted results
