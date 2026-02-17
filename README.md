@@ -20,9 +20,3 @@ This project demonstrates core information retrieval concepts and backend engine
 - `extract.go` / `clean.go`: extraction + normalization
 - `invertedindex.go` / `index.go`: indexing + lookup
 - `stopwords*.json` / `stopwords.go`: stopword filtering
-
-## How to Run
-> Update this section with your actual commands (example below).
-
-```bash
-go run .
